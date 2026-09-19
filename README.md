@@ -1,7 +1,7 @@
 # jev-skill-gate
 
 [![release](https://img.shields.io/github/v/release/ShivamPansuriya/jev-skill-gate?color=2f81f7)](https://github.com/ShivamPansuriya/jev-skill-gate/releases)
-[![tests](https://img.shields.io/badge/tests-43%20passing-3fb950)](test/run.mjs)
+[![tests](https://img.shields.io/badge/tests-52%20passing-3fb950)](test/run.mjs)
 [![node](https://img.shields.io/badge/node-%E2%89%A518-5fa04e)](https://nodejs.org)
 [![dependencies](https://img.shields.io/badge/dependencies-none-3fb950)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-8b949e)](LICENSE)
@@ -224,6 +224,31 @@ p <  0.25  ->  user-invocable-only  hidden from Claude, /name still works
 
 Cost is about **$0.0005 per session** at $0.042/1M input tokens, and results are cached for 7 days keyed on a content hash of your skills plus the project signals.
 
+## Bug Bounty & Security Context Engine
+
+For penetration testers and bug bounty hunters, an active workspace usually consists of reconnaissance notes (`.txt`, `.md`) and exploit proof-of-concept scripts (`.py`) rather than traditional software manifests (`package.json`, `Cargo.toml`).
+
+`jev-skill-gate` includes an automated **Security Context Engine** designed specifically for bug bounty hunting:
+
+1. **Context & Indicator Recognition**:
+   - **Sensitive parameters**: Recognizes suspect query/body parameters (`url=`, `redirect=`, `file=`, `path=`, `id=`, `user_id=`, `cmd=`, `template=`, `query=`, etc.).
+   - **Security tags**: Classifies findings into vulnerability categories (`ssrf`, `path-traversal`, `idor`, `sqli`, `xss`, `command-injection`, `ssti`, `auth-bypass`, `open-redirect`, `cloud-misconfig`, `recon`, `api-security`, `race-condition`, `file-upload`, `deserialization`).
+   - **Bilingual & Synonym Support**: Recognizes both English industry jargon and Vietnamese audit notes (`duyệt thư mục`, `đọc file`, `chèn sql`, `tiêm sql`, `phân quyền`, `thực thi lệnh`).
+   - **PoC / Script Inspection**: Analyzes Python exploit scripts for security libraries (`requests`, `pwntools`, `httpx`) and exploit patterns (`payload =`, `reverse_shell`, `subprocess`, `os.system`, `base64.decode`).
+   - **Endpoint Extraction**: Extracts target URLs, API paths, and GraphQL endpoints (`/graphql`, `/api/proxy?url=`, `/download?file=`).
+
+2. **Security-Aware Scoring & Priority Boost**:
+   - **Synonym Expansion**: Expands phrases in notes via `SECURITY_SYNONYMS` (e.g. notes mentioning "url parameter" automatically match skills for "ssrf").
+   - **Security Boost**: Grants an automatic score boost (+0.15) to skills matching detected security tags, lifting essential tools over the visibility threshold.
+   - **Expanded Capacity**: Multiplies `maxOn` by 1.5x when security context is detected so hunters have immediate access to complementary tools (recon, exploit, bypass, evasion).
+
+Running `preview` immediately displays the detected security context:
+```text
+  security   tags: ssrf, api-security, open-redirect, idor
+             params: url=, redirect=, id=
+             endpoints: https://cnbs-api.underarmour.cn/graphql, /api/fetch?url=...
+```
+
 ## Safety behaviour
 
 Hiding a skill is silent — Claude never learns it existed — so every ambiguous case fails open:
@@ -253,13 +278,23 @@ Optional, at `~/.claude/jev-skill-gate.json`:
   "alwaysOn": ["my-critical-skill"],
   "ignore": ["skill-to-leave-completely-alone"],
   "scope": "auto",
-  "cacheTtlHours": 168
+  "cacheTtlHours": 168,
+  "security": {
+    "enabled": true,
+    "maxNotesFiles": 20,
+    "maxScriptFiles": 10,
+    "maxFileSizeBytes": 4096,
+    "scanDepth": 1,
+    "boostFactor": 0.15,
+    "maxOnMultiplier": 1.5
+  }
 }
 ```
 
 - `alwaysOn` — kept at full visibility whatever the score.
 - `ignore` — no override written at all.
 - `scope` — `auto` writes project-local (`.claude/settings.local.json`) when you are in a project, user-level otherwise. Relevance is a property of the project, so project-local is usually right.
+- `security` — controls security signals collection, scan depth, boost factor, and visibility multiplier for bug bounty workflows.
 
 ## Per-prompt gating
 
