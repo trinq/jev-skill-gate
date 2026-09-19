@@ -19,6 +19,7 @@ import { readStats, recordRun, resetStats, STATS_FILE } from "../src/stats.mjs";
 import { discoverSkills } from "../src/discover.mjs";
 import { runMigrations, readStateVersion, STATE_VERSION } from "../src/migrate.mjs";
 import { installedInfo, fetchRemote, applyUpdate, compareVersions } from "../src/update.mjs";
+import { buildToolHint } from "../src/tool-hints.mjs";
 
 const ENTRYPOINT = fileURLToPath(import.meta.url);
 const PKG_ROOT = resolve(dirname(ENTRYPOINT), "..");
@@ -65,7 +66,7 @@ function cfgFromArgs(args) {
 
 const BADGE = { [STATE_ON]: "ON      ", [STATE_NAME_ONLY]: "name    ", [STATE_HIDDEN]: "hidden  " };
 
-function printPlan(result, { limit = 0 } = {}) {
+function printPlan(result, { limit = 0, cfg = null } = {}) {
   const { plan, provider, cached, costUsd } = result;
   const s = plan.stats;
   const after = s.approxTokensBefore - s.approxTokensSaved;
@@ -84,6 +85,9 @@ function printPlan(result, { limit = 0 } = {}) {
       const shown = result.state.endpoints.slice(0, 3).join(", ");
       const extra = result.state.endpoints.length > 3 ? ` (+${result.state.endpoints.length - 3} more)` : "";
       console.log(`             endpoints: ${shown}${extra}`);
+    }
+    if (cfg?.security?.toolHints?.enabled !== false) {
+      console.log(`             tool hints: enabled (will suggest tools per-prompt)`);
     }
   }
   console.log("");
@@ -120,7 +124,7 @@ async function cmdPreview(args) {
     console.log("gating is disabled in config (provider: disabled)");
     return 0;
   }
-  printPlan(result, { limit: args.all ? 0 : 30 });
+  printPlan(result, { limit: args.all ? 0 : 30, cfg });
   console.log(`  would write ${resolveSettingsPath(projectDir, cfg.scope || "auto")}`);
   console.log(`  run 'jev-skill-gate apply' to apply\n`);
   return 0;
@@ -156,7 +160,7 @@ async function cmdApply(args) {
     });
   }
 
-  printPlan(result, { limit: args.all ? 0 : 20 });
+  printPlan(result, { limit: args.all ? 0 : 20, cfg });
   if (res.skippedUserOwned) {
     console.log(`  kept ${res.skippedUserOwned} override(s) you set by hand`);
   }
@@ -211,6 +215,12 @@ async function cmdHook(args) {
         `${s.on} full / ${s.nameOnly} name-only / ${s.hidden} hidden · ` +
           `~${s.approxTokensSaved} tokens saved · provider=${result.provider}`
       );
+      if (result.state?.security_context?.length > 0) {
+        log.info(`  Security tags: ${result.state.security_context.join(", ")}`);
+        if (cfg.security?.toolHints?.enabled !== false) {
+          log.info(`  Tool hints: enabled (will suggest tools per-prompt)`);
+        }
+      }
 
       // reloadSkills makes Claude Code re-scan after this hook finishes. Skill
       // discovery otherwise completes before SessionStart hooks do, which would
@@ -226,24 +236,49 @@ async function cmdHook(args) {
     if (event === "UserPromptSubmit") {
       const prompt = payload.prompt || "";
       const result = await buildPlan(cfg, { projectDir, prompt, useCache: false });
-      if (!result.plan) return 0;
+
+      // ── Tool Hints (security context only) ──
+      const toolHintParts = [];
+      if (
+        result.state?.security_context?.length > 0 &&
+        cfg.security?.enabled !== false &&
+        cfg.security?.toolHints?.enabled !== false
+      ) {
+        const provider = resolveProvider(cfg);
+        const hint = await buildToolHint(prompt, result.state, cfg, provider);
+        if (hint) toolHintParts.push(hint);
+      }
+
+      if (!result.plan && toolHintParts.length === 0) return 0;
 
       // Per-prompt, the reliable lever is context, not the manifest: the manifest
       // is already built. We surface skills that scored high but are currently
       // reduced, so Claude can still reach for them.
-      const revived = result.plan.decisions
-        .filter((d) => d.score !== null && d.score >= cfg.thresholds.on && d.state !== STATE_ON)
-        .slice(0, 5);
+      const revived = result.plan
+        ? result.plan.decisions
+            .filter((d) => d.score !== null && d.score >= cfg.thresholds.on && d.state !== STATE_ON)
+            .slice(0, 5)
+        : [];
 
-      if (revived.length === 0) return 0;
+      if (revived.length === 0 && toolHintParts.length === 0) return 0;
 
-      const lines = revived.map((d) => `- ${d.skill.name}: ${d.skill.description}`).join("\n");
+      const contextParts = [];
+      if (revived.length > 0) {
+        const lines = revived.map((d) => `- ${d.skill.name}: ${d.skill.description}`).join("\n");
+        contextParts.push(
+          `These skills are relevant to this request and can be invoked with the Skill tool:\n${lines}`
+        );
+      }
+      if (toolHintParts.length > 0) {
+        contextParts.push(toolHintParts.join("\n"));
+      }
+      const additionalContext = contextParts.join("\n\n");
+
       process.stdout.write(
         JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "UserPromptSubmit",
-            additionalContext:
-              `These skills are relevant to this request and can be invoked with the Skill tool:\n${lines}`,
+            additionalContext,
           },
         })
       );

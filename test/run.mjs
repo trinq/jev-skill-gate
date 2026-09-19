@@ -17,6 +17,8 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { _internal } from "../src/discover.mjs";
 import { planOverrides, STATE_ON, STATE_NAME_ONLY, STATE_HIDDEN } from "../src/gate.mjs";
@@ -31,6 +33,13 @@ import { readStats, recordRun, resetStats } from "../src/stats.mjs";
 import { cacheKey } from "../src/cache.mjs";
 import { runMigrations, readStateVersion, STATE_VERSION, STATE_VERSION_FILE } from "../src/migrate.mjs";
 import { compareVersions } from "../src/update.mjs";
+import {
+  buildToolHint,
+  askJevForTool,
+  matchPlaybookByKeywords,
+  SECURITY_PLAYBOOKS,
+  TOOL_DESCRIPTIONS,
+} from "../src/tool-hints.mjs";
 
 setLogLevel("silent");
 
@@ -40,6 +49,18 @@ let failed = 0;
 function test(name, fn) {
   try {
     fn();
+    passed++;
+    console.log(`  ok    ${name}`);
+  } catch (err) {
+    failed++;
+    console.log(`  FAIL  ${name}`);
+    console.log(`        ${err.message}`);
+  }
+}
+
+async function testAsync(name, fn) {
+  try {
+    await fn();
     passed++;
     console.log(`  ok    ${name}`);
   } catch (err) {
@@ -590,5 +611,134 @@ test("detects Vietnamese security keywords in notes", () => {
   }
 });
 
+console.log("\ntool hints");
+
+test("all 15 security playbooks exist and have valid structure", () => {
+  const expectedTags = [
+    "ssrf", "path-traversal", "sqli", "xss", "idor",
+    "command-injection", "ssti", "open-redirect", "auth-bypass",
+    "cloud-misconfig", "recon", "api-security", "race-condition",
+    "file-upload", "deserialization",
+  ];
+  for (const tag of expectedTags) {
+    const pb = SECURITY_PLAYBOOKS[tag];
+    assert.ok(pb, `missing playbook for ${tag}`);
+    assert.ok(pb.tool, `playbook for ${tag} missing tool`);
+    assert.ok(Array.isArray(pb.commands) && pb.commands.length > 0, `playbook for ${tag} missing commands`);
+    assert.ok(typeof pb.nextSteps === "string" && pb.nextSteps.length > 0, `playbook for ${tag} missing nextSteps`);
+  }
+});
+
+await testAsync("buildToolHint returns null without security context", async () => {
+  assert.equal(await buildToolHint("hello", null, cfg()), null);
+  assert.equal(await buildToolHint("hello", {}, cfg()), null);
+  assert.equal(await buildToolHint("hello", { security_context: [] }, cfg()), null);
+});
+
+await testAsync("buildToolHint returns hint with SSRF playbook", async () => {
+  const sec = { security_context: ["ssrf"], detected_params: ["url="] };
+  const hint = await buildToolHint("test ssrf", sec, cfg());
+  assert.ok(hint);
+  assert.ok(hint.includes("[Tool Hint] Recommended tool: Bash"));
+  assert.ok(hint.includes("Context: SSRF indicators detected"));
+  assert.ok(hint.includes("169.254.169.254"));
+  assert.ok(hint.includes("Next steps:"));
+});
+
+await testAsync("buildToolHint returns hint with SQLi playbook", async () => {
+  const sec = { security_context: ["sqli"], detected_params: ["id="] };
+  const hint = await buildToolHint("test sql injection", sec, cfg());
+  assert.ok(hint);
+  assert.ok(hint.includes("SQLI indicators detected"));
+  assert.ok(hint.includes("UNION SELECT"));
+});
+
+await testAsync("buildToolHint replaces {endpoint} placeholder", async () => {
+  const sec = {
+    security_context: ["ssrf"],
+    endpoints: ["https://api.target.com/v1/fetch"],
+    detected_params: ["url="],
+  };
+  const hint = await buildToolHint("test ssrf", sec, cfg());
+  assert.ok(hint);
+  assert.ok(hint.includes('curl -s "https://api.target.com/v1/fetch?url=http://169.254.169.254/latest/meta-data/"'));
+});
+
+await testAsync("fallback works when Jev unavailable", async () => {
+  const sec = { security_context: ["path-traversal"] };
+  const fakeProvider = { kind: "typesafe", apiKey: "invalid-key" };
+  const hint = await buildToolHint("read passwd", sec, cfg(), fakeProvider);
+  assert.ok(hint);
+  assert.ok(hint.includes("PATH-TRAVERSAL indicators detected"));
+  assert.ok(hint.includes("/etc/passwd"));
+});
+
+await testAsync("hint disabled when toolHints.enabled=false", async () => {
+  const sec = { security_context: ["ssrf"] };
+  const disabledCfg = cfg({ security: { toolHints: { enabled: false } } });
+  const hint = await buildToolHint("test ssrf", sec, disabledCfg);
+  assert.equal(hint, null);
+});
+
+await testAsync("askJevForTool returns ranked tools", async () => {
+  const sec = { security_context: ["ssrf"] };
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        answers: {
+          Bash: { noul: 0.95 },
+          Grep: { noul: 0.30 },
+          Read: { noul: 0.10 },
+          FileEdit: { noul: 0.20 },
+          WebSearch: { noul: 0.80 },
+          MCP: { noul: 0.05 },
+        },
+      }),
+    });
+    const provider = { kind: "typesafe", apiKey: "test-key" };
+    const ranked = await askJevForTool("find ssrf", sec, Object.keys(TOOL_DESCRIPTIONS), cfg(), provider);
+    assert.ok(Array.isArray(ranked));
+    assert.equal(ranked[0].tool, "Bash");
+    assert.equal(ranked[0].score, 0.95);
+    assert.equal(ranked[1].tool, "WebSearch");
+    assert.equal(ranked[1].score, 0.80);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+await testAsync("multiple tags produce combined hint prioritizing prompt relevance", async () => {
+  const sec = { security_context: ["ssrf", "sqli"], detected_params: ["url=", "id="] };
+  const hint = await buildToolHint("exploit sql injection vulnerability", sec, cfg());
+  assert.ok(hint);
+  assert.ok(hint.includes("SQLI indicators detected"));
+  assert.ok(hint.includes("UNION SELECT"));
+  assert.ok(hint.includes("tags: ssrf, sqli"));
+});
+
+test("UserPromptSubmit hook injects tool hint into additionalContext", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sec-hook-test-"));
+  try {
+    writeFileSync(join(dir, "notes.txt"), "Target has SSRF vulnerability: https://target.internal/api/proxy?url=");
+    const binPath = join(dirname(fileURLToPath(import.meta.url)), "../bin/jev-skill-gate.mjs");
+    const res = spawnSync(process.execPath, [binPath, "hook", "--event=UserPromptSubmit"], {
+      input: JSON.stringify({ prompt: "exploit ssrf", cwd: dir }),
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 0);
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(parsed.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes("[Tool Hint] Recommended tool: Bash"));
+    assert.ok(ctx.includes("SSRF indicators detected"));
+    assert.ok(ctx.includes("https://target.internal/api/proxy"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);
+

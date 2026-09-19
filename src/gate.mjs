@@ -195,11 +195,10 @@ export function planOverrides(skills, scores, cfg, meta = {}) {
  */
 export async function buildPlan(cfg, { projectDir = process.cwd(), prompt = null, useCache = true } = {}) {
   const skills = discoverSkills({ projectDir });
-  if (skills.length === 0) {
-    return { skills, plan: planOverrides([], new Map(), cfg), provider: "none", cached: false, costUsd: 0 };
-  }
-
   const state = withPrompt(collectSignals(projectDir, cfg.security), prompt);
+  if (skills.length === 0) {
+    return { skills, state, plan: planOverrides([], new Map(), cfg), provider: "none", cached: false, costUsd: 0 };
+  }
   const provider = resolveProvider(cfg);
   if (provider.kind === "disabled") {
     return { skills, state, plan: null, provider: "disabled", cached: false, costUsd: 0 };

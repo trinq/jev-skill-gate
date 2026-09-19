@@ -95,6 +95,12 @@ export const DEFAULTS = {
     scanDepth: 1, // 0 = root only, 1 = one subdirectory level
     boostFactor: 0.15, // score boost for skills matching security tags
     maxOnMultiplier: 1.5, // multiply maxOn when security context detected
+    toolHints: {
+      enabled: true, // master switch for tool hints
+      jevTimeoutMs: 5000, // separate timeout for Jev tool hint
+      maxPlaybookLines: 8, // limit playbook lines to save tokens
+      confidenceThreshold: 0.5, // confidence threshold to recommend tool
+    },
   },
 };
 

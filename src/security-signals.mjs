@@ -64,7 +64,7 @@ const PYTHON_EXPLOIT_PATTERNS = [
   { regex: /\b(?:pwntools|pwn)\b/i, name: "pwntools", tag: "command-injection" },
 ];
 
-const ENDPOINT_REGEX = /(?:(?:GET|POST|PUT|DELETE|PATCH)\s+([/\w\-._~:?#[\]@!$&'()*+,;=]+)|(?:https?:\/\/[^\s"'<>]+)|(\/(?:api|v[0-9]|admin|auth|oauth|users?|account|download|view|file|upload|proxy|graphql|debug|internal|console)[^\s"'<>?]*\??[^\s"'<>]*))/gi;
+const ENDPOINT_REGEX = /(?:(?:\b(?:GET|POST|PUT|DELETE|PATCH)\s+([/\w\-._~:?#[\]@!$&'()*+,;=]+))|(?:https?:\/\/[^\s"'<>]+)|(\/(?:api|v[0-9]|admin|auth|oauth|users?|account|download|view|file|upload|proxy|graphql|debug|internal|console)[^\s"'<>?]*\??[^\s"'<>]*))/gi;
 
 function findFiles(dir, maxDepth, currentDepth = 0) {
   let notesFiles = [];
@@ -180,7 +180,7 @@ export function collectSecuritySignals(projectDir = process.cwd(), options = {})
     ENDPOINT_REGEX.lastIndex = 0;
     while ((epMatch = ENDPOINT_REGEX.exec(content)) !== null) {
       const ep = (epMatch[1] || epMatch[2] || epMatch[0]).trim();
-      if (ep.length > 2 && ep.length < 200) {
+      if ((ep.startsWith("/") || ep.startsWith("http://") || ep.startsWith("https://")) && ep.length > 2 && ep.length < 200) {
         endpoints.add(ep);
         hasNoteIndicator = true;
       }

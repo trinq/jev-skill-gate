@@ -52,7 +52,7 @@ function buildQuestions(skills, questionType) {
 }
 
 /** Per-transport request shape. */
-function buildTransport(provider, cfg) {
+export function buildTransport(provider, cfg) {
   if (provider.kind === "gateway") {
     const base = (cfg.gateway.baseUrl || "https://ai-gateway.vercel.sh").replace(/\/+$/, "");
     return {
@@ -100,7 +100,7 @@ async function pooled(tasks, limit) {
   return out;
 }
 
-async function postWithRetry(url, body, headers, { timeoutMs, maxRetries }) {
+export async function postWithRetry(url, body, headers, { timeoutMs, maxRetries }) {
   let lastErr;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
@@ -146,7 +146,7 @@ async function postWithRetry(url, body, headers, { timeoutMs, maxRetries }) {
 }
 
 /** Reads the probability out of either transport's answer shape. */
-function readProbability(answer) {
+export function readProbability(answer) {
   if (!answer || typeof answer !== "object") return null;
   for (const field of ["noul", "probability"]) {
     if (typeof answer[field] === "number" && Number.isFinite(answer[field])) {
@@ -209,4 +209,4 @@ export async function scoreWithJev(skills, state, cfg, provider) {
   };
 }
 
-export const _internal = { buildTransport, buildQuestions, readProbability };
+export const _internal = { buildTransport, buildQuestions, readProbability, postWithRetry };
