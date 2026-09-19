@@ -21,6 +21,8 @@ import { join, dirname } from "node:path";
 import { _internal } from "../src/discover.mjs";
 import { planOverrides, STATE_ON, STATE_NAME_ONLY, STATE_HIDDEN } from "../src/gate.mjs";
 import { scoreLocally } from "../src/fallback.mjs";
+import { collectSecuritySignals } from "../src/security-signals.mjs";
+import { collectSignals } from "../src/signals.mjs";
 import { readJsonFile, writeJsonAtomic } from "../src/settings.mjs";
 import { DEFAULTS, resolveProvider, maskKey } from "../src/config.mjs";
 import { _internal as jevInternal } from "../src/jev.mjs";
@@ -467,6 +469,122 @@ test("malformed json throws with the path named", () => {
     const p = join(dir, "bad.json");
     writeFileSync(p, "{not json");
     assert.throws(() => readJsonFile(p), /bad\.json/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+console.log("\nsecurity signals");
+
+test("detects SSRF-related params from notes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sec-test-"));
+  try {
+    writeFileSync(join(dir, "notes.txt"), "Testing target endpoint: https://example.com/api/fetch?url=http://169.254.169.254");
+    const signals = collectSecuritySignals(dir);
+    assert.ok(signals);
+    assert.ok(signals.security_context.includes("ssrf"));
+    assert.ok(signals.detected_params.includes("url="));
+    assert.ok(signals.endpoints.some((e) => e.includes("api/fetch") || e.includes("https://example.com")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detects path traversal params from notes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sec-test-"));
+  try {
+    writeFileSync(join(dir, "target.md"), "Found file parameter on /view?file=../../etc/passwd - potential lfi vulnerability");
+    const signals = collectSecuritySignals(dir);
+    assert.ok(signals);
+    assert.ok(signals.security_context.includes("path-traversal"));
+    assert.ok(signals.detected_params.includes("file="));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detects exploit patterns from Python scripts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sec-test-"));
+  try {
+    writeFileSync(join(dir, "exploit.py"), "import requests\npayload = '../etc/passwd'\nrequests.get('http://target/view?file=' + payload)");
+    const signals = collectSecuritySignals(dir);
+    assert.ok(signals);
+    assert.ok(signals.exploit_patterns.includes("payload"));
+    assert.ok(signals.exploit_patterns.includes("requests.http"));
+    assert.ok(signals.security_context.includes("path-traversal"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("returns null for empty workspace", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sec-test-"));
+  try {
+    const signals = collectSecuritySignals(dir);
+    assert.equal(signals, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("synonym expansion boosts SSRF skill", () => {
+  const skills = [
+    skill("ssrf-defense", "prevent server side request forgery"),
+    skill("other-skill", "manage database migrations and schema"),
+  ];
+  const state = { notes_excerpt: "testing url parameter on backend" };
+  const res = scoreLocally(skills, state);
+  assert.ok(res.scores.get("ssrf-defense") > res.scores.get("other-skill"));
+  assert.ok(res.scores.get("ssrf-defense") > 0);
+});
+
+test("security boost lifts a below-threshold skill", () => {
+  const skills = [
+    skill("ssrf-hunting", "hunting SSRF vulnerabilities"),
+    skill("unrelated", "something unrelated"),
+  ];
+  const scores = new Map([
+    ["ssrf-hunting", 0.10],
+    ["unrelated", 0.05],
+  ]);
+  const meta = { calibrated: true, separation: 0.5, signalStrength: 999, securityContext: ["ssrf"] };
+  const { decisions } = planOverrides(skills, scores, cfg(), meta);
+  const ssrfDecision = decisions.find((d) => d.skill.name === "ssrf-hunting");
+  assert.ok(ssrfDecision);
+  assert.equal(ssrfDecision.score, 0.25);
+  assert.equal(ssrfDecision.state, STATE_NAME_ONLY);
+});
+
+test("maxOn increases with security context", () => {
+  const skills = Array.from({ length: 20 }, (_, i) => skill(`s${i}`));
+  const scores = new Map(skills.map((s, i) => [s.name, (i + 1) / 20]));
+  const metaNormal = { calibrated: true, separation: 0.5, signalStrength: 999 };
+  const metaSecurity = { calibrated: true, separation: 0.5, signalStrength: 999, securityContext: ["ssrf"] };
+  const planNormal = planOverrides(skills, scores, cfg(), metaNormal);
+  const planSecurity = planOverrides(skills, scores, cfg(), metaSecurity);
+  assert.equal(planNormal.stats.maxOn, 4);
+  assert.equal(planSecurity.stats.maxOn, 6);
+  assert.ok(planSecurity.stats.on >= planNormal.stats.on);
+});
+
+test("no security context falls back to original behavior", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sec-test-"));
+  try {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "my-app" }));
+    const sigs = collectSignals(dir);
+    assert.equal(sigs.security_context, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detects Vietnamese security keywords in notes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sec-test-"));
+  try {
+    writeFileSync(join(dir, "note.txt"), "Kiểm tra lỗ hổng duyệt thư mục và đọc file cấu hình");
+    const signals = collectSecuritySignals(dir);
+    assert.ok(signals);
+    assert.ok(signals.security_context.includes("path-traversal"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
+import { collectSecuritySignals } from "./security-signals.mjs";
 
 function sh(cmd, args, cwd) {
   try {
@@ -49,7 +50,7 @@ const MANIFESTS = [
  * yet at SessionStart, so relevance is judged against what the project *is*:
  * its stack, its layout, and what has been worked on recently.
  */
-export function collectSignals(projectDir = process.cwd()) {
+export function collectSignals(projectDir = process.cwd(), securityOpts = {}) {
   const signals = {
     project_name: basename(projectDir),
     stack: [],
@@ -95,6 +96,17 @@ export function collectSignals(projectDir = process.cwd()) {
       }
       break;
     }
+  }
+
+  // Security context: scan hunter workspace for notes, scripts, indicators
+  const secCtx = collectSecuritySignals(projectDir, securityOpts);
+  if (secCtx) {
+    signals.security_context = secCtx.security_context;
+    signals.detected_params = secCtx.detected_params;
+    signals.detected_keywords = secCtx.detected_keywords;
+    signals.endpoints = secCtx.endpoints;
+    signals.exploit_patterns = secCtx.exploit_patterns;
+    if (secCtx.notes_excerpt) signals.notes_excerpt = secCtx.notes_excerpt;
   }
 
   // Drop empties so the state stays small and the cache key stays stable.

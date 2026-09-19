@@ -71,6 +71,9 @@ export function planOverrides(skills, scores, cfg, meta = {}) {
   const candidates = [];
   const kept = [];
 
+  const hasSecurityContext = Array.isArray(meta.securityContext) && meta.securityContext.length > 0;
+  const securityBoostFactor = cfg.security?.boostFactor ?? 0.15;
+
   for (const skill of skills) {
     if (ignore.has(skill.name)) continue;
     if (alwaysOn.has(skill.name)) {
@@ -87,7 +90,23 @@ export function planOverrides(skills, scores, cfg, meta = {}) {
       kept.push({ skill, score: null, state: STATE_ON, reason: "unscored" });
       continue;
     }
-    candidates.push({ skill, score: scores.get(skill.name) });
+    let score = scores.get(skill.name);
+    if (hasSecurityContext && typeof score === "number") {
+      const skillText = `${skill.name} ${skill.description}`.toLowerCase();
+      const matchesSecurity = meta.securityContext.some((tag) => {
+        const t = tag.toLowerCase().replace(/[-_]/g, " ");
+        const tagNorm = tag.toLowerCase();
+        return (
+          skillText.includes(tagNorm) ||
+          skillText.includes(t) ||
+          skill.name.toLowerCase().includes(tagNorm)
+        );
+      });
+      if (matchesSecurity) {
+        score = Math.min(1.0, score + securityBoostFactor);
+      }
+    }
+    candidates.push({ skill, score });
   }
 
   candidates.sort((a, b) => b.score - a.score);
@@ -95,7 +114,8 @@ export function planOverrides(skills, scores, cfg, meta = {}) {
   // Caps scale with the library. A flat cap of 40 does nothing on a 54-skill
   // install - almost everything stays fully visible and the gate saves nothing.
   const ratio = (n, r, hard) => Math.max(3, Math.min(hard, Math.round(n * r)));
-  const maxOn = ratio(skills.length, cfg.maxOnRatio ?? 0.2, cfg.maxOn);
+  const securityMultiplier = hasSecurityContext ? (cfg.security?.maxOnMultiplier ?? 1.5) : 1.0;
+  const maxOn = Math.round(ratio(skills.length, cfg.maxOnRatio ?? 0.2, cfg.maxOn) * securityMultiplier);
   const maxNameOnly = ratio(skills.length, cfg.maxNameOnlyRatio ?? 0.3, cfg.maxNameOnly);
 
   const decided = [];
@@ -179,7 +199,7 @@ export async function buildPlan(cfg, { projectDir = process.cwd(), prompt = null
     return { skills, plan: planOverrides([], new Map(), cfg), provider: "none", cached: false, costUsd: 0 };
   }
 
-  const state = withPrompt(collectSignals(projectDir), prompt);
+  const state = withPrompt(collectSignals(projectDir, cfg.security), prompt);
   const provider = resolveProvider(cfg);
   if (provider.kind === "disabled") {
     return { skills, state, plan: null, provider: "disabled", cached: false, costUsd: 0 };
@@ -228,6 +248,7 @@ export async function buildPlan(cfg, { projectDir = process.cwd(), prompt = null
     calibrated: result.calibrated,
     separation: result.separation,
     signalStrength: result.signalStrength,
+    securityContext: state.security_context || null,
   };
   if (useCache) writeCache(key, result.scores, providerUsed, meta);
 

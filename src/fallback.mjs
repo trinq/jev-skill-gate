@@ -43,8 +43,86 @@ function termFreq(tokens) {
   return tf;
 }
 
+export const SECURITY_SYNONYMS = new Map([
+  ["ssrf", ["server-side request forgery", "internal request", "metadata endpoint", "url parameter", "callback url", "cloud metadata", "169.254.169.254"]],
+  ["sqli", ["sql injection", "database injection", "union select", "blind sql", "error based", "chèn sql", "tiêm sql"]],
+  ["xss", ["cross-site scripting", "script injection", "reflected xss", "stored xss", "dom xss", "chèn script"]],
+  ["idor", ["insecure direct object reference", "broken access control", "object reference", "authorization bypass", "horizontal privilege", "phân quyền"]],
+  ["path-traversal", ["directory traversal", "lfi", "local file inclusion", "file read", "dot dot slash", "readfile", "duyệt thư mục", "đọc file"]],
+  ["rce", ["remote code execution", "command injection", "os command", "code execution", "shell injection", "thực thi lệnh", "reverse shell"]],
+  ["command-injection", ["remote code execution", "rce", "command injection", "os command", "shell injection", "reverse shell"]],
+  ["ssti", ["server-side template injection", "template injection", "jinja2", "twig", "freemarker", "mako"]],
+  ["open-redirect", ["redirect", "url redirect", "oauth redirect", "callback redirect", "chuyển hướng"]],
+  ["auth-bypass", ["authentication bypass", "jwt", "session", "token", "bearer", "oauth", "cookie", "leo thang đặc quyền"]],
+  ["cloud-misconfig", ["aws", "s3 bucket", "azure", "gcp", "cloud storage", "iam", "metadata"]],
+  ["recon", ["subdomain", "port scan", "reconnaissance", "enumeration", "osint", "dns", "shodan", "ffuf", "nmap"]],
+  ["api-security", ["graphql", "rest api", "grpc", "api endpoint", "rate limit", "introspection", "swagger"]],
+  ["race-condition", ["race", "concurrent", "toctou", "time of check", "race condition"]],
+  ["file-upload", ["upload", "multipart", "file type", "mime", "webshell", "tải lên file"]],
+  ["deserialization", ["deserialize", "unserialize", "pickle", "yaml load", "object injection"]],
+]);
+
+export function expandWithSynonyms(tokens) {
+  const tokenSet = new Set(tokens);
+  const tokenString = ` ${tokens.join(" ")} `;
+  const extra = [];
+
+  for (const [tag, synList] of SECURITY_SYNONYMS.entries()) {
+    const tagTokens = tokenize(tag);
+    let matched = false;
+
+    if (tagTokens.every((t) => tokenSet.has(t))) {
+      matched = true;
+    }
+
+    if (!matched) {
+      for (const syn of synList) {
+        const synToks = tokenize(syn);
+        if (synToks.length === 1) {
+          if (tokenSet.has(synToks[0])) {
+            matched = true;
+            break;
+          }
+        } else if (synToks.length > 1) {
+          const phrase = ` ${synToks.join(" ")} `;
+          if (tokenString.includes(phrase) || synToks.every((t) => tokenSet.has(t))) {
+            matched = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (matched) {
+      extra.push(...tagTokens);
+      for (const syn of synList) {
+        extra.push(...tokenize(syn));
+      }
+    }
+  }
+
+  return extra;
+}
+
 export function scoreLocally(skills, state) {
-  const stateTokens = tokenize(flattenState(state));
+  let stateTokens = tokenize(flattenState(state));
+
+  // Security tag boost: if state has explicit security_context tags, inject them with x3 weight
+  if (state && typeof state === "object" && Array.isArray(state.security_context)) {
+    for (const tag of state.security_context) {
+      const tagTokens = tokenize(tag);
+      for (let i = 0; i < 3; i++) {
+        stateTokens.push(...tagTokens);
+      }
+    }
+  }
+
+  // Expand with security synonyms
+  const synonymTokens = expandWithSynonyms(stateTokens);
+  if (synonymTokens.length > 0) {
+    stateTokens = stateTokens.concat(synonymTokens);
+  }
+
   const stateTf = termFreq(stateTokens);
 
   const docs = skills.map((s) => termFreq(tokenize(`${s.name} ${s.name.replace(/[-:]/g, " ")} ${s.description}`)));

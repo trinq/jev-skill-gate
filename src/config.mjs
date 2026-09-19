@@ -85,6 +85,17 @@ export const DEFAULTS = {
   cacheTtlHours: 168, // 7 days
   logLevel: "info", // silent | info | debug
   dryRun: false,
+
+  // Security context scanning for bug bounty workflows.
+  security: {
+    enabled: true, // master switch
+    maxNotesFiles: 20, // max .txt/.md files to scan
+    maxScriptFiles: 10, // max .py files to scan
+    maxFileSizeBytes: 4096, // read limit per file
+    scanDepth: 1, // 0 = root only, 1 = one subdirectory level
+    boostFactor: 0.15, // score boost for skills matching security tags
+    maxOnMultiplier: 1.5, // multiply maxOn when security context detected
+  },
 };
 
 function deepMerge(base, patch) {

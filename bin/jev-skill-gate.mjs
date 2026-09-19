@@ -75,6 +75,17 @@ function printPlan(result, { limit = 0 } = {}) {
   console.log(`  skills     ${s.total} discovered`);
   console.log(`  verdict    ${s.on} full · ${s.nameOnly} name-only · ${s.hidden} hidden`);
   console.log(`  tokens     ${s.approxTokensBefore} -> ${after}  (saved ~${s.approxTokensSaved})`);
+  if (result.state?.security_context?.length > 0) {
+    console.log(`  security   tags: ${result.state.security_context.join(", ")}`);
+    if (result.state.detected_params?.length > 0) {
+      console.log(`             params: ${result.state.detected_params.join(", ")}`);
+    }
+    if (result.state.endpoints?.length > 0) {
+      const shown = result.state.endpoints.slice(0, 3).join(", ");
+      const extra = result.state.endpoints.length > 3 ? ` (+${result.state.endpoints.length - 3} more)` : "";
+      console.log(`             endpoints: ${shown}${extra}`);
+    }
+  }
   console.log("");
 
   // The local scorer emits rank-percentiles. Printing 1.00 next to a skill reads
